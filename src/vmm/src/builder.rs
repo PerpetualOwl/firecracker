@@ -46,8 +46,13 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::devices::virtio::mmio::MmioTransport;
 use crate::devices::virtio::net::Net;
+use crate::devices::virtio::pmem::device::VirtioPmem;
+use crate::devices::virtio::crypto::device::VirtioCrypto; // Added for crypto
+use crate::devices::virtio::pmem::VirtioPmemError;
+use crate::devices::virtio::crypto::VirtioCryptoError; // Added for crypto
 use crate::devices::virtio::rng::Entropy;
 use crate::devices::virtio::vsock::{Vsock, VsockUnixBackend};
+use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_PMEM, TYPE_RNG, TYPE_VSOCK, TYPE_CRYPTO}; // Added TYPE_CRYPTO
 #[cfg(feature = "gdb")]
 use crate::gdb;
 use crate::initrd::{InitrdConfig, InitrdError};
@@ -58,6 +63,8 @@ use crate::seccomp::BpfThreadMap;
 use crate::snapshot::Persist;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::MachineConfigError;
+use vmm_config::pmem::PmemDeviceConfig as VmmPmemDeviceConfig;
+use crate::vmm_config::crypto::VirtioCryptoConfig as VmmVirtioCryptoConfig; // Added for crypto
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::GuestRegionMmap;
 use crate::vstate::vcpu::{Vcpu, VcpuError};
@@ -69,6 +76,8 @@ use crate::{EventManager, Vmm, VmmError, device_manager};
 pub enum StartMicrovmError {
     /// Unable to attach block device to Vmm: {0}
     AttachBlockDevice(io::Error),
+    /// Unable to attach pmem device to Vmm: {0}
+    AttachPmemDevice(MmioError), // Added
     /// Unable to attach the VMGenID device: {0}
     AttachVmgenidDevice(kvm_ioctls::Error),
     /// System configuration error: {0}
@@ -77,6 +86,10 @@ pub enum StartMicrovmError {
     CreateGuestConfig(#[from] GuestConfigError),
     /// Cannot create network device: {0}
     CreateNetDevice(crate::devices::virtio::net::NetError),
+    /// Cannot create pmem device: {0}
+    CreatePmemDevice(VirtioPmemError),
+    /// Cannot create crypto device: {0}
+    CreateCryptoDevice(VirtioCryptoError), // Added for crypto
     /// Cannot create RateLimiter: {0}
     CreateRateLimiter(io::Error),
     /// Error creating legacy device: {0}
@@ -272,6 +285,18 @@ pub fn build_microvm_for_boot(
         &mut vmm,
         &mut boot_cmdline,
         vm_resources.block.devices.iter(),
+        event_manager,
+    )?;
+    attach_pmem_devices( // Added
+        &mut vmm,
+        &mut boot_cmdline,
+        vm_resources.pmem.configs().iter(),
+        event_manager,
+    )?;
+    attach_crypto_devices( // Added for crypto
+        &mut vmm,
+        &mut boot_cmdline,
+        vm_resources.crypto.configs().iter(),
         event_manager,
     )?;
     attach_net_devices(
@@ -745,6 +770,58 @@ fn attach_block_devices<'a, I: Iterator<Item = &'a Arc<Mutex<Block>>> + Debug>(
             cmdline,
             is_vhost_user,
         )?;
+    }
+    Ok(())
+}
+
+fn attach_pmem_devices<'a, I: Iterator<Item = &'a VmmPmemDeviceConfig>>( // Changed to iterate VmmPmemDeviceConfig
+    vmm: &mut Vmm,
+    cmdline: &mut LoaderKernelCmdline,
+    pmem_configs: I,
+    event_manager: &mut EventManager,
+) -> Result<(), StartMicrovmError> {
+    for config in pmem_configs {
+        // Directly use the VmmPmemDeviceConfig (aliased as config here)
+        // The VirtioPmem::new() method will need to accept this type.
+        // This assumes VirtioPmem::new() is adapted or already compatible.
+        let pmem_device = Arc::new(Mutex::new(
+            VirtioPmem::new(config.clone()).map_err(StartMicrovmError::CreatePmemDevice)?,
+        ));
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_virtio_device(
+            event_manager,
+            vmm,
+            config.drive_id.clone(),
+            pmem_device,
+            cmdline,
+            false, // virtio-pmem is not vhost-user based in this implementation
+        ).map_err(StartMicrovmError::AttachPmemDevice)?;
+    }
+    Ok(())
+}
+
+
+
+fn attach_crypto_devices<'a, I: Iterator<Item = &'a VmmVirtioCryptoConfig>>( // Added for crypto
+    vmm: &mut Vmm,
+    cmdline: &mut LoaderKernelCmdline,
+    crypto_configs: I,
+    event_manager: &mut EventManager,
+) -> Result<(), StartMicrovmError> {
+    for config in crypto_configs {
+        let crypto_device = Arc::new(Mutex::new(
+            VirtioCrypto::new(config.clone()).map_err(StartMicrovmError::CreateCryptoDevice)?,
+        ));
+
+        attach_virtio_device(
+            event_manager,
+            vmm,
+            config.crypto_id.clone(),
+            crypto_device,
+            cmdline,
+            false, // virtio-crypto is not vhost-user based
+        ).map_err(StartMicrovmError::RegisterMmioDevice)?;
     }
     Ok(())
 }

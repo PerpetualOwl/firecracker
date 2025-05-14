@@ -10,13 +10,17 @@ use std::path::Path;
 use libc::O_NONBLOCK;
 use serde::{Deserialize, Serialize};
 
-use crate::rate_limiter::{BucketUpdate, RateLimiter, TokenBucket};
+// Moved rate_limiter module into vmm_config
+pub mod rate_limiter;
+pub mod utils; // Added utils module for time.rs
+
+use rate_limiter::{BucketUpdate, RateLimiter, TokenBucket};
 
 /// Wrapper for configuring the balloon device.
 pub mod balloon;
 /// Wrapper for configuring the microVM boot source.
 pub mod boot_source;
-// crypto config is now in the vmm_config crate
+/// Wrapper for configuring virtio-crypto devices.
 pub mod crypto;
 /// Wrapper for configuring the block devices.
 pub mod drive;
@@ -32,9 +36,10 @@ pub mod metrics;
 pub mod mmds;
 /// Wrapper for configuring the network devices attached to the microVM.
 pub mod net;
-// pmem config is now in the vmm_config crate
-// pmem config is now in the vmm_config crate
-/// Wrapper for configuring microVM snapshots and the microVM state.
+/// Wrapper for configuring virtio-pmem devices.
+pub mod pmem;
+// pub mod snapshot; // This was for the old snapshot.rs file, new one is snapshot/mod.rs
+/// Wrapper for configuring microVM snapshots and the microVM state. (Now contains Persist trait)
 pub mod snapshot;
 /// Wrapper for configuring the vsock devices attached to the microVM.
 pub mod vsock;

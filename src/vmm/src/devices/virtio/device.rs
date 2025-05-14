@@ -17,13 +17,16 @@ use super::queue::{Queue, QueueError};
 use crate::devices::virtio::AsAny;
 use crate::logger::{error, warn};
 use crate::vstate::memory::GuestMemoryMmap;
+use vm_memory::bitmap::AtomicBitmap; // Added for GuestMemoryMmap generic type
+
+pub use super::queue::QueueError as DescriptorError; // Re-export QueueError as DescriptorError for now to minimize changes elsewhere, or change consuming code.
 
 /// Enum that indicates if a VirtioDevice is inactive or has been activated
 /// and memory attached to it.
 #[derive(Debug)]
 pub enum DeviceState {
     Inactive,
-    Activated(GuestMemoryMmap),
+    Activated(GuestMemoryMmap<Option<AtomicBitmap>>),
 }
 
 impl DeviceState {
@@ -36,7 +39,7 @@ impl DeviceState {
     }
 
     /// Gets the memory attached to the device if it is activated.
-    pub fn mem(&self) -> Option<&GuestMemoryMmap> {
+    pub fn mem(&self) -> Option<&GuestMemoryMmap<Option<AtomicBitmap>>> {
         match self {
             DeviceState::Activated(mem) => Some(mem),
             DeviceState::Inactive => None,
@@ -170,7 +173,7 @@ pub trait VirtioDevice: AsAny + Send {
     fn write_config(&mut self, offset: u64, data: &[u8]);
 
     /// Performs the formal activation for a device, which can be verified also with `is_activated`.
-    fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError>;
+    fn activate(&mut self, mem: GuestMemoryMmap<Option<AtomicBitmap>>) -> Result<(), ActivateError>;
 
     /// Checks if the resources of this device are activated.
     fn is_activated(&self) -> bool;
@@ -182,7 +185,7 @@ pub trait VirtioDevice: AsAny + Send {
     }
 
     /// Mark pages used by queues as dirty.
-    fn mark_queue_memory_dirty(&self, mem: &GuestMemoryMmap) -> Result<(), QueueError> {
+    fn mark_queue_memory_dirty(&self, mem: &GuestMemoryMmap<Option<AtomicBitmap>>) -> Result<(), QueueError> {
         for queue in self.queues() {
             queue.mark_memory_dirty(mem)?
         }
@@ -287,7 +290,7 @@ pub(crate) mod tests {
             todo!()
         }
 
-        fn activate(&mut self, _mem: GuestMemoryMmap) -> Result<(), ActivateError> {
+        fn activate(&mut self, _mem: GuestMemoryMmap<Option<AtomicBitmap>>) -> Result<(), ActivateError> {
             todo!()
         }
 

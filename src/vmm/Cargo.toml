@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 acpi_tables = { path = "../acpi-tables" }
+aes = { version = "0.8.4" }
 aes-gcm =  { version = "0.10.1", default-features = false, features = ["aes"] }
 arrayvec = { version = "0.7.6", optional = true }
 aws-lc-rs = { version = "1.13.0", features = ["bindgen"] }
@@ -17,6 +18,7 @@ base64 = "0.22.1"
 bincode = { version = "2.0.1", features = ["serde"] }
 bitflags = "2.9.0"
 crc64 = "2.0.0"
+block-modes = { version = "0.9.1" }
 derive_more = { version = "2.0.1", default-features = false, features = ["from", "display"] }
 displaydoc = "0.2.5"
 event-manager = "0.4.0"
@@ -24,6 +26,7 @@ gdbstub = { version = "0.7.5", optional = true }
 gdbstub_arch = { version = "0.3.1", optional = true }
 kvm-bindings = { version = "0.11.1", features = ["fam-wrappers", "serde"] }
 kvm-ioctls = "0.21.0"
+hmac = { version = "0.12.1" }
 libc = "0.2.172"
 linux-loader = "0.13.0"
 log = { version = "0.4.27", features = ["std", "serde"] }
@@ -33,6 +36,7 @@ micro_http = { git = "https://github.com/firecracker-microvm/micro-http" }
 semver = { version = "1.0.26", features = ["serde"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.140"
+sha2 = { version = "0.10.8" }
 slab = "0.4.7"
 thiserror = "2.0.12"
 timerfd = "1.5.0"
@@ -43,6 +47,7 @@ vm-allocator = "0.1.0"
 vm-memory = { version = "0.16.1", features = ["backend-mmap", "backend-bitmap"] }
 vm-superio = "0.8.0"
 vmm-sys-util = { version = "0.12.1", features = ["with-serde"] }
+vmm_config = { path = "../vmm_config" }
 zerocopy = { version = "0.8.25" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]

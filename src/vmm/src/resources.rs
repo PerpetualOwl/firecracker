@@ -28,9 +28,13 @@ use crate::vmm_config::machine_config::{
 use crate::vmm_config::metrics::{MetricsConfig, MetricsConfigError, init_metrics};
 use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::*;
+use vmm_config::pmem::{PmemBuilder, PmemConfigError, PmemDeviceConfig};
+use vmm_config::crypto::{CryptoBuilder, CryptoConfigError, VirtioCryptoConfig}; // Added for crypto
 use crate::vmm_config::vsock::*;
 use crate::vstate::memory;
 use crate::vstate::memory::{GuestRegionMmap, MemoryError};
+use crate::devices::virtio::pmem::VirtioPmemError;
+use crate::devices::virtio::crypto::VirtioCryptoError; // Added for crypto
 
 /// Errors encountered when configuring microVM resources.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -39,6 +43,10 @@ pub enum ResourcesError {
     BalloonDevice(#[from] BalloonConfigError),
     /// Block device error: {0}
     BlockDevice(#[from] DriveError),
+    /// Pmem device error: {0}
+    PmemDevice(#[from] PmemConfigError),
+    /// Crypto device error: {0}
+    CryptoDevice(#[from] CryptoConfigError), // Added for crypto
     /// Boot source error: {0}
     BootSource(#[from] BootSourceConfigError),
     /// File operation error: {0}
@@ -61,6 +69,10 @@ pub enum ResourcesError {
     VsockDevice(#[from] VsockConfigError),
     /// Entropy device error: {0}
     EntropyDevice(#[from] EntropyDeviceError),
+    /// VirtioPmem specific error during resource setup: {0}
+    VirtioPmem(#[from] VirtioPmemError),
+    /// VirtioCrypto specific error during resource setup: {0}
+    VirtioCrypto(#[from] VirtioCryptoError), // Added for crypto
 }
 
 /// Used for configuring a vmm from one single json passed to the Firecracker process.
@@ -69,6 +81,10 @@ pub enum ResourcesError {
 pub struct VmmConfig {
     balloon: Option<BalloonDeviceConfig>,
     drives: Vec<BlockDeviceConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pmem_devices: Vec<PmemDeviceConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    crypto_devices: Vec<VirtioCryptoConfig>, // Added for crypto
     boot_source: BootSourceConfig,
     cpu_config: Option<PathBuf>,
     logger: Option<crate::logger::LoggerConfig>,
@@ -91,6 +107,10 @@ pub struct VmResources {
     pub boot_source: BootSource,
     /// The block devices.
     pub block: BlockBuilder,
+    /// The pmem devices.
+    pub pmem: PmemBuilder,
+    /// The crypto devices.
+    pub crypto: CryptoBuilder, // Added for crypto
     /// The vsock device.
     pub vsock: VsockBuilder,
     /// The balloon device.
@@ -149,6 +169,14 @@ impl VmResources {
             resources.set_block_device(drive_config)?;
         }
 
+        for pmem_config in vmm_config.pmem_devices.into_iter() {
+            resources.add_pmem_device(pmem_config)?;
+        }
+
+        for crypto_config in vmm_config.crypto_devices.into_iter() { // Added for crypto
+            resources.add_crypto_device(crypto_config)?;
+        }
+
         for net_config in vmm_config.network_interfaces.into_iter() {
             resources.build_net_device(net_config)?;
         }
@@ -204,11 +232,15 @@ impl VmResources {
             SharedDeviceType::VirtioBlock(block) => {
                 self.block.add_virtio_device(block);
             }
-
+            SharedDeviceType::VirtioPmem(pmem) => {
+                self.pmem.add_device(pmem);
+            }
+            SharedDeviceType::VirtioCrypto(crypto) => { // Added for crypto
+                self.crypto.add_device(crypto);
+            }
             SharedDeviceType::Network(network) => {
                 self.net_builder.add_device(network);
             }
-
             SharedDeviceType::Balloon(balloon) => {
                 self.balloon.set_device(balloon);
 
@@ -216,7 +248,6 @@ impl VmResources {
                     return Err(ResourcesError::BalloonDevice(BalloonConfigError::HugePages));
                 }
             }
-
             SharedDeviceType::Vsock(vsock) => {
                 self.vsock.set_device(vsock);
             }
@@ -341,6 +372,22 @@ impl VmResources {
         self.block.insert(block_device_config)
     }
 
+    /// Inserts a pmem device configuration to be attached when the VM starts.
+    pub fn add_pmem_device(
+        &mut self,
+        pmem_config: PmemDeviceConfig,
+    ) -> Result<(), PmemConfigError> { // Changed error type
+        self.pmem.insert(pmem_config)
+    }
+
+    /// Inserts a crypto device configuration.
+    pub fn add_crypto_device(
+        &mut self,
+        crypto_config: VirtioCryptoConfig,
+    ) -> Result<(), CryptoConfigError> { // Changed error type
+        self.crypto.insert(crypto_config)
+    }
+
     /// Builds a network device to be attached when the VM starts.
     pub fn build_net_device(
         &mut self,
@@ -459,7 +506,7 @@ impl VmResources {
         // that would not be worth the effort.
         let regions =
             crate::arch::arch_memory_regions(0, mib_to_bytes(self.machine_config.mem_size_mib));
-        if vhost_user_device_used {
+        if vhost_user_device_used { // TODO: Check if pmem DAX also needs memfd_backed
             memory::memfd_backed(
                 regions.as_ref(),
                 self.machine_config.track_dirty_pages,
@@ -480,6 +527,8 @@ impl From<&VmResources> for VmmConfig {
         VmmConfig {
             balloon: resources.balloon.get_config().ok(),
             drives: resources.block.configs(),
+            pmem_devices: resources.pmem.configs(),
+            crypto_devices: resources.crypto.configs(), // Added for crypto
             boot_source: resources.boot_source.config.clone(),
             cpu_config: None,
             logger: None,
@@ -517,6 +566,7 @@ mod tests {
         BootConfig, BootSource, BootSourceConfig, DEFAULT_KERNEL_CMDLINE,
     };
     use crate::vmm_config::drive::{BlockBuilder, BlockDeviceConfig};
+    use crate::vmm_config::crypto::{CryptoBuilder, VirtioCryptoConfig}; // Added for crypto
     use crate::vmm_config::machine_config::{HugePageConfig, MachineConfig, MachineConfigError};
     use crate::vmm_config::net::{NetBuilder, NetworkInterfaceConfig};
     use crate::vmm_config::vsock::tests::default_config;
@@ -565,11 +615,46 @@ mod tests {
         )
     }
 
+    fn default_pmem_cfg() -> (PmemDeviceConfig, TempFile) {
+        let tmp_file = TempFile::new().unwrap();
+        (
+            PmemDeviceConfig {
+                drive_id: "pmem1".to_string(),
+                path_on_host: tmp_file.as_path().to_str().unwrap().to_string(),
+                size_mib: 128,
+                is_read_only: false,
+                use_dax: true,
+            },
+            tmp_file,
+        )
+    }
+
+    fn default_crypto_cfg() -> VirtioCryptoConfig { // Added for crypto
+        VirtioCryptoConfig {
+            crypto_id: "crypto0".to_string(),
+            num_data_queues: 1,
+        }
+    }
+
     fn default_blocks() -> BlockBuilder {
         let mut blocks = BlockBuilder::new();
         let (cfg, _file) = default_block_cfg();
         blocks.insert(cfg).unwrap();
         blocks
+    }
+
+    fn default_pmems() -> PmemBuilder {
+        let mut pmems = PmemBuilder::new();
+        let (cfg, _file) = default_pmem_cfg();
+        pmems.insert(cfg).unwrap();
+        pmems
+    }
+
+    fn default_cryptos() -> CryptoBuilder { // Added for crypto
+        let mut cryptos = CryptoBuilder::new();
+        let cfg = default_crypto_cfg();
+        cryptos.insert(cfg).unwrap();
+        cryptos
     }
 
     fn default_boot_cfg() -> BootSource {
@@ -591,6 +676,8 @@ mod tests {
             machine_config: MachineConfig::default(),
             boot_source: default_boot_cfg(),
             block: default_blocks(),
+            pmem: default_pmems(),
+            crypto: default_cryptos(), // Added for crypto
             vsock: Default::default(),
             balloon: Default::default(),
             net_builder: default_net_builder(),
@@ -605,6 +692,7 @@ mod tests {
     fn test_from_json() {
         let kernel_file = TempFile::new().unwrap();
         let rootfs_file = TempFile::new().unwrap();
+        let pmem_file = TempFile::new().unwrap(); // Added for pmem
         let default_instance_info = InstanceInfo::default();
 
         // We will test different scenarios with invalid resources configuration and
@@ -704,6 +792,39 @@ mod tests {
             "{:?}",
             error
         );
+
+        // Invalid pmem path
+        json = format!(
+            r#"{{
+                    "boot-source": {{
+                        "kernel_image_path": "{}"
+                    }},
+                    "drives": [
+                        {{
+                            "drive_id": "rootfs",
+                            "path_on_host": "{}",
+                            "is_root_device": true,
+                            "is_read_only": false
+                        }}
+                    ],
+                    "pmem-devices": [
+                        {{
+                            "drive_id": "pmem0",
+                            "path_on_host": "/invalid/pmem_path",
+                            "size_mib": 64
+                        }}
+                    ]
+            }}"#,
+            kernel_file.as_path().to_str().unwrap(),
+            rootfs_file.as_path().to_str().unwrap()
+        );
+        let error = VmResources::from_json(
+            json.as_str(),
+            &default_instance_info,
+            HTTP_MAX_PAYLOAD_SIZE,
+            None,
+        ).unwrap_err();
+        assert!(matches!(error, ResourcesError::PmemDevice(PmemConfigError::InvalidDriveId))); // Path error is caught by PmemFileProperties
         // Valid config for x86 but invalid on aarch64 since it uses cpu_template.
         json = format!(
             r#"{{
@@ -929,6 +1050,15 @@ mod tests {
                             "is_read_only": false
                         }}
                     ],
+                    "pmem-devices": [
+                        {{
+                            "drive_id": "pmem0",
+                            "path_on_host": "{}",
+                            "size_mib": 128,
+                            "is_read_only": false,
+                            "use_dax": true
+                        }}
+                    ],
                     "network-interfaces": [
                         {{
                             "iface_id": "netif",
@@ -948,6 +1078,7 @@ mod tests {
             }}"#,
             kernel_file.as_path().to_str().unwrap(),
             rootfs_file.as_path().to_str().unwrap(),
+            pmem_file.as_path().to_str().unwrap() // Added pmem_file
         );
         VmResources::from_json(
             json.as_str(),
@@ -1545,6 +1676,19 @@ mod tests {
         vm_resources.set_block_device(new_block_device_cfg).unwrap();
         assert_eq!(vm_resources.block.devices.len(), 2);
     }
+
+    #[test]
+    fn test_add_pmem_device() { // Added
+        let mut vm_resources = default_vm_resources();
+        let (mut new_pmem_cfg, _file) = default_pmem_cfg();
+        let tmp_file = TempFile::new().unwrap();
+        new_pmem_cfg.drive_id = "pmem2".to_string();
+        new_pmem_cfg.path_on_host = tmp_file.as_path().to_str().unwrap().to_string();
+        assert_eq!(vm_resources.pmem.configs.len(), 1); // Assuming default_pmems adds one
+        vm_resources.add_pmem_device(new_pmem_cfg).unwrap();
+        assert_eq!(vm_resources.pmem.configs.len(), 2);
+    }
+
 
     #[test]
     fn test_set_vsock_device() {

@@ -5,6 +5,7 @@ pub mod actions;
 pub mod balloon;
 pub mod boot_source;
 pub mod cpu_configuration;
+pub mod crypto; // Added for crypto
 pub mod drive;
 pub mod entropy;
 pub mod instance_info;
@@ -13,6 +14,7 @@ pub mod machine_configuration;
 pub mod metrics;
 pub mod mmds;
 pub mod net;
+pub mod pmem;
 pub mod snapshot;
 pub mod version;
 pub mod vsock;

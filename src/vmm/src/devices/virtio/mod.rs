@@ -14,6 +14,7 @@ use crate::devices::virtio::net::TapError;
 
 pub mod balloon;
 pub mod block;
+pub mod crypto; // Added crypto module
 pub mod device;
 pub mod generated;
 mod iov_deque;
@@ -21,6 +22,7 @@ pub mod iovec;
 pub mod mmio;
 pub mod net;
 pub mod persist;
+pub mod pmem;
 pub mod queue;
 pub mod rng;
 pub mod test_utils;
@@ -56,6 +58,12 @@ pub const TYPE_BLOCK: u32 = 2;
 pub const TYPE_RNG: u32 = 4;
 /// Virtio balloon device ID.
 pub const TYPE_BALLOON: u32 = 5;
+/// Virtio pmem device ID.
+pub const TYPE_PMEM: u32 = 27;
+/// Virtio crypto device ID.
+pub const TYPE_CRYPTO: u32 = 20;
+/// Virtio vsock device ID.
+pub const TYPE_VSOCK: u32 = 19;
 
 /// Offset from the base MMIO address of a virtio device used by the guest to notify the device of
 /// queue events.
@@ -74,6 +82,8 @@ pub enum ActivateError {
     TapSetOffload(TapError),
     /// Error setting pointers in the queue: (0)
     QueueMemoryError(QueueError),
+    /// General bad activate state
+    BadActivate,
 }
 
 /// Trait that helps in upcasting an object to Any

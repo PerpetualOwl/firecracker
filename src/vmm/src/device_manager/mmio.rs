@@ -32,11 +32,16 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::devices::virtio::mmio::MmioTransport;
 use crate::devices::virtio::net::Net;
+use crate::devices::virtio::pmem::device::VirtioPmem;
+use crate::devices::virtio::crypto::device::VirtioCrypto; // Added for crypto
 use crate::devices::virtio::rng::Entropy;
 use crate::devices::virtio::vsock::{TYPE_VSOCK, Vsock, VsockUnixBackend};
-use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_RNG};
+use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_PMEM, TYPE_RNG, TYPE_CRYPTO}; // Added TYPE_CRYPTO
 #[cfg(target_arch = "x86_64")]
 use crate::vstate::memory::GuestAddress;
+use crate::vmm_config::drive::BlockDeviceConfig;
+use vmm_config::pmem::PmemDeviceConfig;
+use crate::vmm_config::crypto::VirtioCryptoConfig; // Added for crypto
 
 /// Errors for MMIO device manager.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -62,6 +67,14 @@ pub enum MmioError {
     #[cfg(target_arch = "x86_64")]
     /// Failed to create AML code for device
     AmlError(#[from] aml::AmlError),
+    /// Error creating virtio-pmem device: {0}
+    PmemDevice(crate::devices::virtio::pmem::VirtioPmemError),
+    /// Invalid PmemDeviceConfig: {0}   // Added for pmem config validation
+    InvalidPmemConfig(String),
+    /// Error creating virtio-crypto device: {0}
+    CryptoDevice(crate::devices::virtio::crypto::VirtioCryptoError), // Added for crypto
+    /// Invalid CryptoDeviceConfig: {0}
+    InvalidCryptoConfig(String), // Added for crypto
 }
 
 /// This represents the size of the mmio device specified to the kernel through ACPI and as a
@@ -262,6 +275,59 @@ impl MMIODeviceManager {
             )?;
         }
         Ok(device_info)
+    }
+
+    /// Adds a virtio-pmem device to the MMIO bus.
+    pub fn add_pmem_device(
+        &mut self,
+        vm: &VmFd,
+        resource_allocator: &mut ResourceAllocator,
+        guest_mem: crate::vstate::memory::GuestMemoryMmap,
+        config: PmemDeviceConfig,
+        cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<MMIODeviceInfo, MmioError> {
+        config.validate().map_err(MmioError::InvalidPmemConfig)?;
+
+        // Directly use PmemDeviceConfig (which is `config` here)
+        // VirtioPmem::new() needs to be adapted to take this type.
+        let pmem_device = Arc::new(Mutex::new(
+            VirtioPmem::new(config.clone()).map_err(MmioError::PmemDevice)?,
+        ));
+
+        let mmio_transport = MmioTransport::new(guest_mem, pmem_device, false);
+        self.register_mmio_virtio_for_boot(
+            vm,
+            resource_allocator,
+            config.drive_id,
+            mmio_transport,
+            cmdline,
+        )
+    }
+
+    /// Adds a virtio-crypto device to the MMIO bus.
+    pub fn add_crypto_device(
+        &mut self,
+        vm: &VmFd,
+        resource_allocator: &mut ResourceAllocator,
+        guest_mem: crate::vstate::memory::GuestMemoryMmap,
+        config: VirtioCryptoConfig, // Using the one from device module directly for now
+        cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<MMIODeviceInfo, MmioError> {
+        // TODO: Add config.validate() if specific validation rules are needed for VirtioCryptoConfig
+        // config.validate().map_err(MmioError::InvalidCryptoConfig)?;
+
+        let crypto_device = Arc::new(Mutex::new(
+            VirtioCrypto::new(config.clone()).map_err(MmioError::CryptoDevice)?,
+        ));
+
+        let mmio_transport = MmioTransport::new(guest_mem, crypto_device, false);
+        self.register_mmio_virtio_for_boot(
+            vm,
+            resource_allocator,
+            config.crypto_id,
+            mmio_transport,
+            cmdline,
+        )
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -513,6 +579,29 @@ impl MMIODeviceManager {
                             entropy.process_virtio_queues();
                         }
                     }
+                    TYPE_PMEM => {
+                        // For pmem, guest-initiated requests (FLUSH, PLUG, UNPLUG) are processed.
+                        // Kicking might be relevant if there's async backend work, but for mmap/msync,
+                        // it's less critical than for I/O devices with continuous data flow.
+                        // For now, a simple process_virtio_queues should suffice if needed.
+                        if let Some(pmem) = virtio.as_mut_any().downcast_mut::<VirtioPmem>() {
+                            if pmem.is_activated() {
+                                info!("kick pmem {}.", id);
+                                pmem.process_virtio_queues();
+                            }
+                        }
+                    }
+                    TYPE_CRYPTO => {
+                        // Kicking crypto device might involve signaling to process queues
+                        // if there's async backend work or specific events to handle.
+                        // For a direct Rust backend, it might be similar to pmem.
+                        if let Some(crypto) = virtio.as_mut_any().downcast_mut::<VirtioCrypto>() {
+                            if crypto.is_activated() {
+                                info!("kick crypto {}.", id);
+                                // crypto.process_virtio_queues(); // Assuming a similar method
+                            }
+                        }
+                    }
                     _ => (),
                 }
                 Ok(())
@@ -601,7 +690,7 @@ mod tests {
         fn set_acked_features(&mut self, _: u64) {}
 
         fn device_type(&self) -> u32 {
-            0
+            0 // Using a generic type for dummy
         }
 
         fn queues(&self) -> &[Queue] {

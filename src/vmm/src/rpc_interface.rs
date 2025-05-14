@@ -33,9 +33,13 @@ use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::{
     NetworkInterfaceConfig, NetworkInterfaceError, NetworkInterfaceUpdateConfig,
 };
+use vmm_config::pmem::PmemDeviceConfig;
+use crate::vmm_config::crypto::VirtioCryptoConfig; // Added for crypto
 use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, SnapshotType};
 use crate::vmm_config::vsock::{VsockConfigError, VsockDeviceConfig};
 use crate::vmm_config::{self, RateLimiterUpdate};
+use crate::devices::virtio::pmem::VirtioPmemError;
+use crate::devices::virtio::crypto::VirtioCryptoError; // Added for crypto
 
 /// This enum represents the public interface of the VMM. Each action contains various
 /// bits of information (ids, paths, etc.).
@@ -72,6 +76,11 @@ pub enum VmmAction {
     /// Add a new block device or update one that already exists using the `BlockDeviceConfig` as
     /// input. This action can only be called before the microVM has booted.
     InsertBlockDevice(BlockDeviceConfig),
+    /// Add a new pmem device or update one that already exists using the `PmemDeviceConfig` as
+    /// input. This action can only be called before the microVM has booted.
+    InsertPmemDevice(PmemDeviceConfig),
+    /// Add a new virtio-crypto device. This action can only be called before the microVM has booted.
+    InsertCryptoDevice(VirtioCryptoConfig), // Added for crypto
     /// Add a new network interface config or update one that already exists using the
     /// `NetworkInterfaceConfig` as input. This action can only be called before the microVM has
     /// booted.
@@ -136,6 +145,10 @@ pub enum VmmActionError {
     ConfigureCpu(#[from] GuestConfigError),
     /// Drive config error: {0}
     DriveConfig(#[from] DriveError),
+    /// Pmem device error: {0}
+    PmemDevice(#[from] VirtioPmemError),
+    /// Crypto device error: {0}
+    CryptoDevice(#[from] VirtioCryptoError), // Added for crypto
     /// Entropy device error: {0}
     EntropyDevice(#[from] EntropyDeviceError),
     /// Internal VMM error: {0}
@@ -421,6 +434,8 @@ impl<'a> PrebootApiController<'a> {
             GetVmInstanceInfo => Ok(VmmData::InstanceInformation(self.instance_info.clone())),
             GetVmmVersion => Ok(VmmData::VmmVersion(self.instance_info.vmm_version.clone())),
             InsertBlockDevice(config) => self.insert_block_device(config),
+            InsertPmemDevice(config) => self.insert_pmem_device(config),
+            InsertCryptoDevice(config) => self.insert_crypto_device(config), // Added for crypto
             InsertNetworkDevice(config) => self.insert_net_device(config),
             LoadSnapshot(config) => self
                 .load_snapshot(&config)
@@ -465,6 +480,24 @@ impl<'a> PrebootApiController<'a> {
             .set_block_device(cfg)
             .map(|()| VmmData::Empty)
             .map_err(VmmActionError::DriveConfig)
+    }
+
+    fn insert_pmem_device(&mut self, cfg: PmemDeviceConfig) -> Result<VmmData, VmmActionError> {
+        self.boot_path = true;
+        // TODO: Need to add a `set_pmem_device` or similar to VmResources
+        // For now, this will cause a compile error.
+        self.vm_resources
+            .add_pmem_device(cfg) // This method needs to be created in VmResources
+            .map(|()| VmmData::Empty)
+            .map_err(VmmActionError::PmemDevice)
+    }
+
+    fn insert_crypto_device(&mut self, cfg: VirtioCryptoConfig) -> Result<VmmData, VmmActionError> {
+        self.boot_path = true;
+        self.vm_resources
+            .add_crypto_device(cfg) // This method needs to be created in VmResources
+            .map(|()| VmmData::Empty)
+            .map_err(VmmActionError::CryptoDevice)
     }
 
     fn insert_net_device(
@@ -673,6 +706,8 @@ impl RuntimeApiController {
             | ConfigureLogger(_)
             | ConfigureMetrics(_)
             | InsertBlockDevice(_)
+            | InsertPmemDevice(_)
+            | InsertCryptoDevice(_) // Added for crypto
             | InsertNetworkDevice(_)
             | LoadSnapshot(_)
             | PutCpuConfiguration(_)
